@@ -1,0 +1,104 @@
+#!/bin/bash
+#
+# requires:
+#  bash
+#
+set -e
+set -o pipefail
+set -x
+
+repouri=${1}
+reponame=${repouri##*/}    # https://github.com/foo/bar.git -> bar.git
+reponame=${reponame%%.git} # bar.git -> bar
+reponame=rpm4${reponame}   # bar -> rpm4bar
+
+## pre-setup rpmbuild directory tree
+
+mkdir -p ${HOME}/rpmbuild/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS}
+
+## fetch git repository
+
+if ! [[ -d "${reponame}" ]]; then
+  git clone ${repouri} ${reponame}
+fi
+cd ${reponame}
+git pull
+
+## generate build_id
+
+git_version=$(git log HEAD -n 1 --pretty=format:"%h")
+git_datetime=$(date --date="$(git log ${git_version} -n 1 --pretty=format:"%cd" --date=iso)" +%Y%m%d%H%M%S)
+build_id=${git_datetime}git${git_version}
+
+##
+
+cd ${HOME}/rpmbuild/SPECS
+
+## generate rpmspec file
+
+cat <<'EOS'> ${reponame}.spec
+%define _name    git2rpm
+%define _git_uri https://github.com/hansode/git2rpm
+%define _version 0.1.0
+
+%{?reponame:%define _name %{reponame}}
+%{?repouri:%define _git_uri %{repouri}}
+%{?build_id:%define _version %{build_id}}
+
+Name:           %{_name}
+Version:        %{_version}
+Release:        1%{?dist}
+Summary:        git2rpm
+BuildArch:      noarch
+
+License:        BSD
+URL:            %{_git_uri}
+Source0:        %{_git_uri}
+Prefix:         /home/git2rpm/%{_name}
+
+BuildRequires:  git rsync
+
+%description
+
+
+%prep
+[ -d %{name}-%{version} ] && rm -rf %{name}-%{version}
+git clone %{_git_uri} %{name}-%{version}
+cd %{name}-%{version}
+: # don't delete this line.
+%setup -T -D
+
+
+%build
+
+
+%install
+rm -rf $RPM_BUILD_ROOT
+mkdir -p $RPM_BUILD_ROOT/%{prefix}
+rsync -aHA \
+ --exclude=".git" \
+ --exclude=".git/*" \
+ `pwd`/ \
+ $RPM_BUILD_ROOT/%{prefix}/
+
+
+%clean
+rm -rf $RPM_BUILD_ROOT
+
+
+%files
+%defattr(-,root,root,-)
+%{prefix}/
+%doc
+
+
+
+%changelog
+EOS
+
+## build rpm
+
+rpmbuild -bb ${reponame}.spec \
+ --define "repouri ${repouri}" \
+ --define "reponame ${reponame}" \
+ --define "build_id ${build_id}"
